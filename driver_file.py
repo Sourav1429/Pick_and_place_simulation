@@ -9,6 +9,7 @@ import pybullet as p
 import pybullet_data
 import time
 import numpy as np
+import random
 
 #-----------CLOSE PREVIOUSLY OPENED GUI LINKS---------------
 try:
@@ -24,8 +25,8 @@ p.setGravity(0, 0, -9.81)
 p.resetDebugVisualizerCamera(
     cameraDistance=3.5,
     cameraYaw=0,
-    cameraPitch=-30,
-    cameraTargetPosition=[0.55, -0.15, 0.2]
+    cameraPitch=-89,
+    cameraTargetPosition=[0.45, 0.5, 0.2]
 )
 
 # ------------------ TABLE (WORKSPACE) ------------------
@@ -56,8 +57,8 @@ ee_link = 11
 grid_points = []
 for i in range(3):
     for j in range(3):
-        x = 0 + i * 1   # spacing adjusted to fill table nicely
-        y = 1.2 + j * 0.5
+        x = -0.5 + i * 0.3   # spacing adjusted to fill table nicely
+        y = 1.5 + j * 0.5
         z = TABLE_Z
         grid_points.append([x, y, z])
 
@@ -75,21 +76,23 @@ half = cube_size / 2
 start_idx = 0   # pick from grid[0]
 goal_idx = 8    # place at grid[8]
 
-cube = p.createMultiBody(
-    baseMass=0.2,
-    baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_BOX, halfExtents=[half]*3),
-    baseVisualShapeIndex=p.createVisualShape(
-        p.GEOM_BOX, halfExtents=[half]*3,
-        rgbaColor=[0.2, 0.6, 0.9, 1]
-    ),
-    basePosition=[
-        grid_points[start_idx][0],
-        grid_points[start_idx][1],
-        TABLE_Z + half
-    ]
-)
 
-arm_start_position = [0,0.9,TABLE_Z+0.5]
+
+arm_start_position = grid_points[0]
+#------- Function to place the cube randomly at a grid -------------------
+def place_cube_random():
+    idx = random.randint(0, len(grid_points) - 1)
+
+    x, y, z = grid_points[idx]
+    cube_height = 0.1 / 2  # same as your half size
+
+    p.resetBasePositionAndOrientation(
+        cube,
+        [x, y, TABLE_Z + cube_height],
+        [0, 0, 0, 1]
+    )
+
+    return idx
 
 #------- Function to move the robot arm--------
 def move(target):
@@ -117,9 +120,35 @@ def move(target):
         time.sleep(0.1)
 
 #-------------------- RESET -----------------
+cube = p.createMultiBody(
+    baseMass=0.2,
+    baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_BOX, halfExtents=[half]*3),
+    baseVisualShapeIndex=p.createVisualShape(
+        p.GEOM_BOX, halfExtents=[half]*3,
+        rgbaColor=[0.2, 0.6, 0.9, 1]
+    ),
+    basePosition=[
+        grid_points[start_idx][0],
+        grid_points[start_idx][1],
+        TABLE_Z + half
+    ]
+)
+idx = place_cube_random()
 move(arm_start_position)
+#--------------- Check for if the cube is in the grid where the arm is stopped--------
+def is_ee_over_cube(threshold=0.05):
+    ee_pos = p.getLinkState(robot, ee_link)[0]
+    cube_pos, _ = p.getBasePositionAndOrientation(cube)
 
-# ------------------ MOTION ------------------
+    dist = np.linalg.norm([
+        ee_pos[0] - cube_pos[0],
+        ee_pos[1] - cube_pos[1]
+    ])
+    
+    print("Distance of gripper from cube:",dist)
+    #input()
+
+    return dist < threshold
 
 #-------------------PICK-UP--------------------
 def pickup():
@@ -151,15 +180,19 @@ def pickup():
 
 def release(cid):
     p.removeConstraint(cid)
+
+#idx = place_cube_random()
+
+if is_ee_over_cube():
     
-cid = pickup()
-
-# lift after grasp
-move([grid_points[start_idx][0],
-      grid_points[start_idx][1],
-      TABLE_Z + 0.5])
-#--------------- Check for if the cube is in the grid where the arm is stopped--------
-
+    cid = pickup()
+    
+    # lift after grasp
+    move([grid_points[start_idx][0],
+          grid_points[start_idx][1],
+          TABLE_Z + 0.5])
+else:
+    print("Gripper not on top of the cube. You get a negative reward of -10")
 
 # def move_ee(target_pos, steps=120):
 #     current_pos = p.getLinkState(robot, ee_link)[0]
