@@ -13,7 +13,7 @@ import random
 
 
 class RobotEnv:
-    def __init__(self):
+    def __init__(self,n=3):
         # ---------- CONNECTION ----------
         try:
             p.disconnect()
@@ -33,8 +33,11 @@ class RobotEnv:
         )
 
         # ---------- TABLE ----------
+        self.n = n
         self.TABLE_CENTER = [1, 2, -0.65]
         self.TABLE_Z = 0.9
+        self.cid = None
+        self.status = "Not Holding"
 
         self.table = p.loadURDF(
             "table/table.urdf",
@@ -50,11 +53,12 @@ class RobotEnv:
         )
 
         self.ee_link = 11
+        self.grid_text_id = -1
 
         # ---------- GRID ----------
         self.grid_points = []
-        for i in range(3):
-            for j in range(3):
+        for i in range(self.n):
+            for j in range(self.n):
                 x = -0.5 + i * 0.3
                 y = 1.5 + j * 0.5
                 z = self.TABLE_Z
@@ -75,11 +79,11 @@ class RobotEnv:
         self.cube = p.createMultiBody(
             baseMass=0.2,
             baseCollisionShapeIndex=p.createCollisionShape(
-                p.GEOM_BOX, halfExtents=[self.half]*3
+                p.GEOM_BOX, halfExtents=[self.half]*self.n
             ),
             baseVisualShapeIndex=p.createVisualShape(
                 p.GEOM_BOX,
-                halfExtents=[self.half]*3,
+                halfExtents=[self.half]*self.n,
                 rgbaColor=[0.2, 0.6, 0.9, 1]
             ),
             basePosition=[
@@ -92,6 +96,23 @@ class RobotEnv:
         self.arm_start_position = self.grid_points[0]
 
     # ---------- RANDOM CUBE ----------
+    def show_current_grid(self):
+        status = "Holding" if self.object_holding() else "Not Holding"
+
+        if self.grid_text_id != -1:
+            p.removeUserDebugItem(self.grid_text_id)
+    
+        ee_pos = p.getLinkState(
+            self.robot,
+            self.ee_link
+        )[0]
+    
+        self.grid_text_id = p.addUserDebugText(
+            f"Current Grid: {self.arm_position_idx}| Status:{status} the object",
+            [ee_pos[0], ee_pos[1], ee_pos[2]+0.25],
+            textColorRGB=[0,1,0],
+            textSize=1.8
+        )
     def place_cube_random(self):
         idx = random.randint(0, len(self.grid_points) - 1)
 
@@ -131,7 +152,7 @@ class RobotEnv:
             time.sleep(0.1)
 
     # ---------- ALIGNMENT CHECK ----------
-    def is_ee_over_cube(self, threshold=0.05):
+    def is_ee_over_cube(self, threshold=0.15):
         ee_pos = p.getLinkState(self.robot, self.ee_link)[0]
         cube_pos, _ = p.getBasePositionAndOrientation(self.cube)
 
@@ -149,9 +170,9 @@ class RobotEnv:
         ee_pos = p.getLinkState(self.robot, self.ee_link)[0]
 
         self.move([cube_pos[0], cube_pos[1], ee_pos[2]])
-        self.move([cube_pos[0], cube_pos[1], cube_pos[2] + 0.02])
+        self.move([cube_pos[0], cube_pos[1], cube_pos[2] + 0.005])
 
-        cid = p.createConstraint(
+        self.cid = p.createConstraint(
             self.robot,
             self.ee_link,
             self.cube,
@@ -162,36 +183,97 @@ class RobotEnv:
             [0, 0, 0]
         )
 
-        return cid
-
-    def release(self, cid):
-        p.removeConstraint(cid)
+    def release(self):
+        print("Release called")
+        if self.cid is not None:
+    
+            p.removeConstraint(self.cid)
+    
+            self.cid = None
+    
+            for _ in range(100):
+                p.stepSimulation()
+                time.sleep(1/240.)
+    #--------- Holding object -----------------
+    def object_holding(self):
+        return self.cid is not None
 
     # ---------- RESET ----------
     def reset(self):
         idx = self.place_cube_random()
         self.move(self.arm_start_position)
+        self.arm_position_idx = 0
+        self.show_current_grid()
+        
         return self.grid_points[idx],self.arm_start_position
+        #return self.grid_points[idx],self.arm_start_position
 
     # ---------- STEP EXAMPLE ----------
-    def run(self):
-        idx = self.reset()
+    def step(self,a,cid=None):
+        left_arm = a[0]
+        right_arm = a[1]
+        r = 0
+        done = False
+        ret_flag = False
+        next_state = self.grid_points[self.arm_position_idx]
+        if left_arm==0:
+            if not self.object_holding():#####Build this function
+                if self.is_ee_over_cube():
+                    self.cid = self.pickup()
+                    self.status = "Holding"
+                    self.show_current_grid()
+                    
+                    r = 10
+                    #r = 10
+                    ret_flag = True
+                else:
+                    r=-10
+                    done = True
+            else:
+                if self.check_drop_position():
+                    r=-100
+                else:
+                    self.release()   # <- actually detach cube
+                
+                    r = 10
+                    self.status = "Not Holding"
+                    self.show_current_grid()
+                
+                    ret_flag = True
+                done=True
+        elif left_arm==1:
+            ret_flag = True
+            row = self.arm_position_idx // self.n
+            col = self.arm_position_idx % self.n
+            
+            
+            # 0 = left
+            if right_arm == 0:
+                col = min(col + 1, self.n-1)
+            
+            # 1 = right
+            elif right_arm == 1:
+                col = max(col - 1, 0)
+            
+            # 2 = down
+            elif right_arm == 2:
+                row = max(row - 1, 0)
+            
+            # 3 = up
+            elif right_arm == 3:
+                row = min(row + 1, self.n-1)
+            
+            
+            new_idx = row*self.n + col
+            next_state = self.grid_points[new_idx]
 
-        if self.is_ee_over_cube():
-            cid = self.pickup()
-
-            self.move([
-                self.grid_points[0][0],
-                self.grid_points[0][1],
-                self.TABLE_Z + 0.5
-            ])
-        else:
-            print("Negative reward")
-
-        while True:
-            p.stepSimulation()
-            time.sleep(1/240.)
-env = RobotEnv()
-cube_pos,gripper_position = env.reset()
-print("CUBE location:",cube_pos)
-print("Robot arm gripper location:",gripper_position)
+            self.move(next_state)
+            
+            self.arm_position_idx = new_idx
+            
+            self.show_current_grid()
+        return next_state,r,done,ret_flag
+# env = RobotEnv()
+# cube_pos,gripper_position = env.reset()
+# print("CUBE location:",cube_pos)
+# print("Robot arm gripper location:",gripper_position)
