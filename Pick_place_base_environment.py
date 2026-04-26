@@ -83,7 +83,7 @@ class RobotEnv:
             ),
             baseVisualShapeIndex=p.createVisualShape(
                 p.GEOM_BOX,
-                halfExtents=[self.half]*self.n,
+                halfExtents=[self.half]*3,
                 rgbaColor=[0.2, 0.6, 0.9, 1]
             ),
             basePosition=[
@@ -125,6 +125,48 @@ class RobotEnv:
         )
 
         return idx
+    #---------Tray to drop in------------
+    def place_goal_random(self):
+
+        choices = list(range(len(self.grid_points)))
+        choices.remove(self.cube_idx)
+    
+        self.goal_idx = random.choice(choices)
+    
+        x,y,_ = self.grid_points[self.goal_idx]
+    
+        # bowl/container
+        self.goal = p.createMultiBody(
+            baseMass=0,
+    
+            baseCollisionShapeIndex=p.createCollisionShape(
+                p.GEOM_CYLINDER,
+                radius=0.12,
+                height=0.06
+            ),
+    
+            baseVisualShapeIndex=p.createVisualShape(
+                p.GEOM_CYLINDER,
+                radius=0.12,
+                length=0.06,
+                rgbaColor=[0.8,0.5,0.1,1]   # brown bowl
+            ),
+    
+            basePosition=[
+                x,
+                y,
+                self.TABLE_Z + 0.3
+            ]
+        )
+    
+        # p.addUserDebugText(
+        #     "BOWL",
+        #     [x,y,self.TABLE_Z+0.15],
+        #     textColorRGB=[1,1,0],
+        #     textSize=2
+        # )
+    
+        return self.goal_idx
 
     # ---------- MOVE ----------
     def move(self, target):
@@ -152,7 +194,7 @@ class RobotEnv:
             time.sleep(0.1)
 
     # ---------- ALIGNMENT CHECK ----------
-    def is_ee_over_cube(self, threshold=0.15):
+    def is_ee_over_cube(self, threshold=0.25):
         ee_pos = p.getLinkState(self.robot, self.ee_link)[0]
         cube_pos, _ = p.getBasePositionAndOrientation(self.cube)
 
@@ -184,28 +226,61 @@ class RobotEnv:
         )
 
     def release(self):
-        print("Release called")
+
         if self.cid is not None:
     
-            p.removeConstraint(self.cid)
+            # current end-effector position
+            ee_pos = p.getLinkState(
+                self.robot,
+                self.ee_link
+            )[0]
     
+            # move gripper upward before letting go
+            self.move([
+                ee_pos[0],
+                ee_pos[1],
+                ee_pos[2] + 0.3   # try 0.3 first
+            ])
+    
+            # remove grasp constraint
+            p.removeConstraint(self.cid)
             self.cid = None
     
+            # let cube fall
             for _ in range(100):
                 p.stepSimulation()
                 time.sleep(1/240.)
+    
+            self.status = "Not Holding"
+            self.show_current_grid()
     #--------- Holding object -----------------
     def object_holding(self):
         return self.cid is not None
+    def check_drop_position(self, threshold=0.25):
+
+        ee_pos = p.getLinkState(
+            self.robot,
+            self.ee_link
+        )[0]
+    
+        goal_pos = self.grid_points[self.goal_idx]
+    
+        dist = np.linalg.norm([
+            ee_pos[0]-goal_pos[0],
+            ee_pos[1]-goal_pos[1]
+        ])
+    
+        return dist < threshold
 
     # ---------- RESET ----------
     def reset(self):
-        idx = self.place_cube_random()
+        self.cube_idx = self.place_cube_random()
+        self.goal_idx = self.place_goal_random()
         self.move(self.arm_start_position)
         self.arm_position_idx = 0
         self.show_current_grid()
         
-        return self.grid_points[idx],self.arm_start_position
+        return self.grid_points[self.cube_idx],self.arm_start_position,self.goal_idx
         #return self.grid_points[idx],self.arm_start_position
 
     # ---------- STEP EXAMPLE ----------
@@ -219,19 +294,20 @@ class RobotEnv:
         if left_arm==0:
             if not self.object_holding():#####Build this function
                 if self.is_ee_over_cube():
-                    self.cid = self.pickup()
+                    self.pickup()
                     self.status = "Holding"
                     self.show_current_grid()
                     
-                    r = 10
+                    r = 1
                     #r = 10
                     ret_flag = True
                 else:
                     r=-10
                     done = True
             else:
-                if self.check_drop_position():
+                if not self.check_drop_position():
                     r=-100
+                    done=True
                 else:
                     self.release()   # <- actually detach cube
                 
@@ -240,7 +316,7 @@ class RobotEnv:
                     self.show_current_grid()
                 
                     ret_flag = True
-                done=True
+                    done = True
         elif left_arm==1:
             ret_flag = True
             row = self.arm_position_idx // self.n

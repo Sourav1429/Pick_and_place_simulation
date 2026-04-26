@@ -10,7 +10,7 @@ gc = GestureController()
 env = RobotEnv()
 need_user_input = 1
 done = False
-cube_pos,gripper_position = env.reset()
+cube_pos,gripper_position,goal_idx = env.reset()
 while not done:
     gc.update_camera()   # keeps feed alive
 
